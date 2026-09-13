@@ -61,7 +61,7 @@ meets a harder environment.
 ## Target repository layout
 
 ```
-rl-racing-agent/
+kurve/
 ├── README.md
 ├── requirements.txt
 ├── environment.yml
