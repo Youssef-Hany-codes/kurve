@@ -1,0 +1,15 @@
+# Conda alternative to the venv setup in docs/SETUP.md.
+#   conda env create -f environment.yml
+#   conda activate kurve
+#   pip install torch --index-url https://download.pytorch.org/whl/cu130 --force-reinstall
+#
+# conda-forge ships a prebuilt box2d-py, so no compiler is needed on this route.
+name: kurve
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - box2d-py=2.3.8
+  - pip:
+      - -r requirements.txt

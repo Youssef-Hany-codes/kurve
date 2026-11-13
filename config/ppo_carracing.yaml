@@ -1,0 +1,52 @@
+# Stage 1 — PPO on CarRacing-v3, discrete actions.
+#
+# One "timestep" here is one agent decision. With frame_skip: 2 the simulator
+# advances 2 frames per timestep, so 2M timesteps = 4M simulator frames.
+
+run_name: ppo_carracing     # names the output folders under models/ logs/ videos/ results/
+algo: ppo
+seed: 42
+device: auto                # "cuda" if available, else "cpu"
+total_timesteps: 2000000
+
+env:
+  id: CarRacing-v3
+  n_envs: 8                 # parallel training envs (SubprocVecEnv)
+  kwargs:
+    continuous: false       # Discrete(5): noop, steer right, steer left, gas, brake
+    lap_complete_percent: 0.95
+    domain_randomize: false
+  skip_zoom_frames: 50      # no-op through the opening camera zoom on every reset
+  frame_skip: 2             # repeat each action for N simulator frames
+  frame_stack: 4            # stack the last N observations so the CNN can see velocity
+  reward_shaping:           # training envs only; evaluation always uses the raw reward
+    clip_max: 1.0           # cap the per-step reward (tile bonuses are ~3-7 raw)
+    patience: 100           # end the episode after N steps in a row without progress
+
+policy: CnnPolicy
+
+ppo:
+  learning_rate: 2.5e-4
+  lr_schedule: linear       # "linear" decays to 0 over training, "constant" holds
+  n_steps: 512              # per env, so 8 x 512 = 4096 samples per update
+  batch_size: 128
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+
+eval:
+  freq: 50000               # timesteps between evaluations (scores + best-model saving)
+  video_freq: 400000        # timesteps between recorded videos; one more is recorded at the end
+  n_episodes: 5
+  deterministic: true
+
+checkpoint:
+  freq: 250000              # timesteps between saved training checkpoints
+
+compare:
+  n_episodes: 10            # episodes per policy for the before/after metrics
+  gif_name: ppo_before_after.gif
