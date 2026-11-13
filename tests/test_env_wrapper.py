@@ -7,7 +7,7 @@ import pytest
 from stable_baselines3.common.env_checker import check_env
 
 from src.envs.carracing_wrapper import FrameSkip, SkipZoom, agent_fps, make_env, make_vec_env
-from src.evaluate import RandomPolicy, run_episode, summarize
+from src.evaluate import EpisodeResult, RandomPolicy, run_episode, summarize
 
 # --- wrappers against a scripted stub env -----------------------------------
 
@@ -140,3 +140,63 @@ def test_run_episode_scores_and_captures_frames(env_cfg):
         assert stats["mean_return"] == pytest.approx(result.episode_return)
     finally:
         vec_env.close()
+
+
+def test_telemetry_reports_driving_metrics_without_changing_the_score(env_cfg):
+    def play(telemetry):
+        vec_env = make_vec_env(env_cfg, n_envs=1, seed=0, shaped=False, telemetry=telemetry)
+        try:
+            policy = RandomPolicy(vec_env.action_space, seed=0)
+            return run_episode(vec_env, policy, seed=3, max_steps=40)
+        finally:
+            vec_env.close()
+
+    plain, measured = play(False), play(True)
+    assert not plain.has_telemetry
+    assert measured.has_telemetry
+    assert measured.episode_return == pytest.approx(plain.episode_return)
+    assert measured.actions == plain.actions
+
+    assert measured.outcome == "cut_off"
+    assert len(measured.speeds) == len(measured.actions) == 40
+    assert all(speed >= 0 for speed in measured.speeds)
+    assert 0 <= measured.off_track_steps <= 40
+    assert 0 < measured.tiles_visited <= measured.track_tiles
+    assert 0 < measured.track_completion <= 1
+
+
+def test_summarize_adds_driving_metrics_when_telemetry_is_present():
+    lap = EpisodeResult(
+        episode_return=920.0, length=400, outcome="lap", actions=[3] * 300 + [1] * 100,
+        speeds=[50.0] * 400, off_track_steps=0, tiles_visited=290, track_tiles=300,
+    )
+    crash = EpisodeResult(
+        episode_return=-80.0, length=100, outcome="out_of_bounds", actions=[3] * 100,
+        speeds=[100.0] * 100, off_track_steps=50, tiles_visited=30, track_tiles=300,
+    )
+    stats = summarize([lap, crash], fps=25.0, action_names=("nothing", "right", "left", "gas", "brake"))
+
+    assert stats["episodes_solved"] == 1
+    assert stats["laps_completed"] == 1
+    assert stats["out_of_bounds"] == 1
+    assert stats["mean_lap_time_s"] == pytest.approx(16.0)
+    assert stats["best_lap_time_s"] == pytest.approx(16.0)
+    assert stats["mean_duration_s"] == pytest.approx(10.0)
+    assert stats["mean_track_completion"] == pytest.approx((290 / 300 + 30 / 300) / 2)
+    assert stats["min_track_completion"] == pytest.approx(0.1)
+    assert stats["mean_speed"] == pytest.approx(60.0)  # weighted by steps
+    assert stats["max_speed"] == pytest.approx(100.0)
+    assert stats["off_track_share"] == pytest.approx(0.1)
+    assert stats["action_shares"] == pytest.approx(
+        {"nothing": 0.0, "right": 0.2, "left": 0.0, "gas": 0.8, "brake": 0.0}
+    )
+    assert stats["outcomes"] == ["lap", "out_of_bounds"]
+
+
+def test_summarize_without_telemetry_keeps_to_score_metrics():
+    stats = summarize([EpisodeResult(episode_return=5.0, length=10)])
+    assert stats["mean_return"] == pytest.approx(5.0)
+    assert stats["mean_lap_length"] is None
+    assert "mean_track_completion" not in stats
+    assert "action_shares" not in stats
+    assert "mean_duration_s" not in stats

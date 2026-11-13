@@ -14,8 +14,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
+import gymnasium as gym
 import imageio.v2 as imageio
 import numpy as np
 from stable_baselines3.common.vec_env import VecEnv
@@ -48,6 +49,24 @@ class EpisodeResult:
     episode_return: float
     length: int  # agent steps
     frames: list[np.ndarray] = field(default_factory=list)
+    # How the episode ended: "lap" (lap completed), "out_of_bounds" (drove off
+    # the map), "time_limit", or "cut_off" (stopped by max_steps).
+    outcome: str = "time_limit"
+    actions: list[int] = field(default_factory=list)  # discrete action spaces only
+    # Filled only when the env was built with telemetry=True:
+    speeds: list[float] = field(default_factory=list)
+    off_track_steps: int = 0  # steps that ended with no wheel on the road
+    tiles_visited: int | None = None
+    track_tiles: int | None = None
+
+    @property
+    def has_telemetry(self) -> bool:
+        return self.track_tiles is not None
+
+    @property
+    def track_completion(self) -> float:
+        """Share of the track's tiles the car reached, 0-1."""
+        return self.tiles_visited / self.track_tiles
 
 
 def run_episode(
@@ -70,32 +89,97 @@ def run_episode(
         vec_env.seed(seed)
     obs = vec_env.reset()
     result = EpisodeResult(episode_return=0.0, length=0)
+    discrete = isinstance(vec_env.action_space, gym.spaces.Discrete)
     while True:
         if capture:
             result.frames.append(vec_env.get_images()[0])
         action, _ = policy.predict(obs, deterministic=deterministic)
-        obs, rewards, dones, _ = vec_env.step(action)
+        obs, rewards, dones, infos = vec_env.step(action)
+        info = infos[0]  # on the last step this is still the finished episode's info
         result.episode_return += float(rewards[0])
         result.length += 1
-        if dones[0] or (max_steps is not None and result.length >= max_steps):
+        if discrete:
+            result.actions.append(int(action[0]))
+        if "track_tiles" in info:
+            result.speeds.append(info["speed"])
+            result.off_track_steps += info["wheels_on_track"] == 0
+            result.tiles_visited = info["tiles_visited"]
+            result.track_tiles = info["track_tiles"]
+        if dones[0]:
+            if "lap_finished" in info:
+                result.outcome = "lap" if info["lap_finished"] else "out_of_bounds"
+            return result
+        if max_steps is not None and result.length >= max_steps:
+            result.outcome = "cut_off"
             return result
 
 
-def summarize(results: list[EpisodeResult]) -> dict[str, Any]:
-    """Aggregate episode results into the metrics stored in ``results/``."""
+SOLVED_RETURN = 900.0  # CarRacing's "solved" bar for the average score
+
+
+def summarize(
+    results: list[EpisodeResult],
+    *,
+    fps: float | None = None,
+    action_names: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Aggregate episode results into the metrics stored in ``results/``.
+
+    Score metrics are always present. ``fps`` (agent steps per second) adds
+    durations in seconds, ``action_names`` adds how often each discrete action
+    was used, and episodes run with telemetry add the driving metrics.
+    """
     returns = np.array([r.episode_return for r in results], dtype=np.float64)
     lengths = np.array([r.length for r in results], dtype=np.float64)
-    return {
+    outcomes = [r.outcome for r in results]
+    lap_lengths = [r.length for r in results if r.outcome == "lap"]
+    metrics: dict[str, Any] = {
         "n_episodes": len(results),
         "mean_return": float(returns.mean()),
         "std_return": float(returns.std()),
         "median_return": float(np.median(returns)),
         "min_return": float(returns.min()),
         "max_return": float(returns.max()),
+        "episodes_solved": int((returns >= SOLVED_RETURN).sum()),
         "mean_length": float(lengths.mean()),
-        "returns": [float(r) for r in returns],
-        "lengths": [int(n) for n in lengths],
+        "laps_completed": outcomes.count("lap"),
+        "out_of_bounds": outcomes.count("out_of_bounds"),
+        "mean_lap_length": float(np.mean(lap_lengths)) if lap_lengths else None,
     }
+    if fps is not None:
+        metrics["mean_duration_s"] = metrics["mean_length"] / fps
+        metrics["mean_lap_time_s"] = metrics["mean_lap_length"] / fps if lap_lengths else None
+        metrics["best_lap_time_s"] = min(lap_lengths) / fps if lap_lengths else None
+
+    telemetry = bool(results) and all(r.has_telemetry for r in results)
+    if telemetry:
+        completion = np.array([r.track_completion for r in results])
+        speeds = np.concatenate([r.speeds for r in results])
+        metrics.update(
+            mean_track_completion=float(completion.mean()),
+            min_track_completion=float(completion.min()),
+            mean_speed=float(speeds.mean()),
+            max_speed=float(speeds.max()),
+            off_track_share=float(sum(r.off_track_steps for r in results) / lengths.sum()),
+        )
+
+    if action_names is not None and all(r.actions for r in results):
+        counts = np.bincount(
+            np.concatenate([r.actions for r in results]), minlength=len(action_names)
+        )
+        metrics["action_shares"] = {
+            name: float(count / counts.sum()) for name, count in zip(action_names, counts)
+        }
+
+    metrics["returns"] = [float(r) for r in returns]
+    metrics["lengths"] = [int(n) for n in lengths]
+    metrics["outcomes"] = outcomes
+    if telemetry:
+        metrics["track_tiles"] = [r.track_tiles for r in results]
+        metrics["tiles_visited"] = [r.tiles_visited for r in results]
+        metrics["mean_speeds"] = [float(np.mean(r.speeds)) for r in results]
+        metrics["off_track_shares"] = [r.off_track_steps / r.length for r in results]
+    return metrics
 
 
 def write_video(frames: list[np.ndarray], path: str | Path, fps: float) -> Path:

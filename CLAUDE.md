@@ -11,14 +11,14 @@ tooling, and the recorded before/after artifacts for each stage.
 
 ## Status
 
-- **Stage 1 (PPO on CarRacing-v3): trained, "after" comparison NOT built
-  yet.** The 2M-timestep run finished on 2026-11-13 in 3 h 04 min. Training-time
-  evals (5 fixed tracks, raw reward): 914.8 ± 5.1 at 2M, best 918.2 ± 6.0 at
-  1.7M (`models/ppo_carracing/best_model.zip`); first above 900 at 400k. The
-  random baseline is -43.0 ± 11.6 over 10 tracks
-  (`results/ppo_carracing/metrics_before.json`). Still to do:
-  `compare --stage after` (note it overwrites the training-end
-  `step_final.mp4` with a best-model recording) and `plotting`.
+- **Stage 1 (PPO on CarRacing-v3): done.** The 2M-timestep run finished on
+  2026-11-13 in 3 h 04 min. Before/after on 10 fixed tracks, raw reward:
+  random -43.0 ± 11.6, trained (`final_model.zip`) **917.0 ± 9.6**, 9/10 laps
+  completed and 9/10 episodes at 900+ (seed 10048 ran out of time one tile
+  short, 894.6). Full report in `results/ppo_carracing/comparison_table.md`,
+  learning curve in `results/ppo_carracing/learning_curve.png`. Training-time
+  evals (5 tracks): 914.8 ± 5.1 at 2M, best 918.2 ± 6.0 at 1.7M
+  (`best_model.zip`, 918.9 ± 6.5 on the 10 tracks); first above 900 at 400k.
 - **Stage 2 and Stage 3: not started.** `config/sac_*.yaml`, `src/envs/ac_env.py`
   and `src/ac_interface/*` are empty placeholder files.
 
@@ -57,6 +57,17 @@ Decisions made while building Stage 1, on top of the locked-in ones below:
   before and after are scored on identical tracks.
 - **`src/evaluate.py` doubles as the rollout library** (`run_episode`,
   `summarize`, `write_video`) used by `callbacks.py` and `compare.py`.
+- **`compare.py --stage after` scores `final_model.zip` by default**, not
+  `best_model.zip`: the best model is selected on 5 of the 10 comparison
+  tracks, so scoring it there would be biased. It also keeps `step_final.mp4`
+  meaning "the agent when training finished" (the file is only rewritten when
+  the final model is the one being scored). `evaluate.py` still defaults to
+  `best_model.zip` for live viewing.
+- **Driving metrics come from an opt-in `Telemetry` wrapper**
+  (`make_vec_env(..., telemetry=True)`, used by `compare.py` only): speed,
+  wheels on track and tiles visited are added to `info`; `run_episode` and
+  `summarize` turn them into track completion, laps, lap time, off-road share
+  and action usage. Training and training-time eval envs do not use it.
 - **Hyperparameters in `config/ppo_carracing.yaml` were never tuned**: the
   first full run with them reached ~915, so they were left as they are.
 - **Dependencies**: `pygame-ce` instead of `pygame` (no 3.14 wheels), and

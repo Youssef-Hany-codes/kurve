@@ -2,7 +2,7 @@
 
 Wrapper stack for one env, innermost first:
 
-    CarRacing-v3 -> SkipZoom -> FrameSkip -> [RewardShaping] -> Monitor
+    CarRacing-v3 -> [Telemetry] -> SkipZoom -> FrameSkip -> [RewardShaping] -> Monitor
 
 and for the vectorised env:
 
@@ -10,6 +10,8 @@ and for the vectorised env:
 
 ``RewardShaping`` is applied to training envs only. Evaluation envs keep the
 raw reward, so every reported metric is the true CarRacing score.
+``Telemetry`` is opt-in and used by the before/after comparison; it only adds
+entries to ``info`` and never changes observations or rewards.
 """
 
 from __future__ import annotations
@@ -27,6 +29,33 @@ from stable_baselines3.common.vec_env import (
     VecFrameStack,
     VecTransposeImage,
 )
+
+
+# CarRacing-v3's discrete action ids, in order.
+DISCRETE_ACTIONS = ("nothing", "steer right", "steer left", "gas", "brake")
+
+
+class Telemetry(gym.Wrapper):
+    """Report what the car is doing in ``info`` on every step.
+
+    - ``speed``: the hull's speed, in the simulator's own units (the same
+      number CarRacing draws as its speed bar).
+    - ``wheels_on_track``: how many of the 4 wheels touch a road tile.
+    - ``tiles_visited`` / ``track_tiles``: progress around this track.
+
+    It sits directly on the base env so it reads the simulator state of the
+    frame the step ended on.
+    """
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        base = self.env.unwrapped
+        vx, vy = base.car.hull.linearVelocity
+        info["speed"] = float(np.hypot(vx, vy))
+        info["wheels_on_track"] = sum(1 for wheel in base.car.wheels if wheel.tiles)
+        info["tiles_visited"] = int(base.tile_visited_count)
+        info["track_tiles"] = len(base.track)
+        return obs, reward, terminated, truncated, info
 
 
 class SkipZoom(gym.Wrapper):
@@ -130,15 +159,19 @@ def make_env(
     shaped: bool,
     render_mode: str | None = None,
     monitor_file: str | Path | None = None,
+    telemetry: bool = False,
 ) -> Callable[[], gym.Env]:
     """Return a factory for one wrapped env, built from the config's ``env`` section.
 
     ``shaped=True`` adds ``RewardShaping`` (training). ``monitor_file`` makes
     the ``Monitor`` write per-episode stats to ``<monitor_file>.monitor.csv``.
+    ``telemetry=True`` adds ``Telemetry`` (speed, wheels on track, progress).
     """
 
     def _init() -> gym.Env:
         env = gym.make(env_cfg["id"], render_mode=render_mode, **env_cfg.get("kwargs", {}))
+        if telemetry:
+            env = Telemetry(env)
         if env_cfg.get("skip_zoom_frames", 0) > 0:
             env = SkipZoom(env, frames=env_cfg["skip_zoom_frames"])
         if env_cfg.get("frame_skip", 1) > 1:
@@ -161,6 +194,7 @@ def make_vec_env(
     shaped: bool,
     render_mode: str | None = None,
     monitor_dir: str | Path | None = None,
+    telemetry: bool = False,
 ) -> VecEnv:
     """Build the vectorised, frame-stacked, channel-first env the CNN policy consumes.
 
@@ -175,6 +209,7 @@ def make_vec_env(
             shaped=shaped,
             render_mode=render_mode,
             monitor_file=Path(monitor_dir) / str(i) if monitor_dir is not None else None,
+            telemetry=telemetry,
         )
         for i in range(n_envs)
     ]
