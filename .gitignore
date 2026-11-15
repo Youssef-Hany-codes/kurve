@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+
+# Virtual environments and locally built wheels (see docs/SETUP.md)
+.venv/
+venv/
+wheels/
+
+# Training outputs that are large or regenerable. Videos, results and
+# docs/assets are kept: they are the project's before/after record.
+logs/*
+!logs/.gitkeep
+models/**/*.zip
+models/**/checkpoints/
+
+# Throwaway output of `python -m src.train --smoke`
+**/_smoke/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

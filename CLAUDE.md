@@ -11,8 +11,75 @@ tooling, and the recorded before/after artifacts for each stage.
 
 ## Status
 
-Scaffolding stage — the repo currently holds only `README.md`, `LICENSE`, and
-this file. Nothing below exists yet; it is the plan to build against.
+- **Stage 1 (PPO on CarRacing-v3): done.** The 2M-timestep run finished on
+  2026-11-13 in 3 h 04 min. Before/after on 10 fixed tracks, raw reward:
+  random -43.0 ± 11.6, trained (`final_model.zip`) **917.0 ± 9.6**, 9/10 laps
+  completed and 9/10 episodes at 900+ (seed 10048 ran out of time one tile
+  short, 894.6). Full report in `results/ppo_carracing/comparison_table.md`,
+  learning curve in `results/ppo_carracing/learning_curve.png`. Training-time
+  evals (5 tracks): 914.8 ± 5.1 at 2M, best 918.2 ± 6.0 at 1.7M
+  (`best_model.zip`, 918.9 ± 6.5 on the 10 tracks); first above 900 at 400k.
+- **Stage 2 and Stage 3: not started.** `config/sac_*.yaml`, `src/envs/ac_env.py`
+  and `src/ac_interface/*` are empty placeholder files.
+
+## Running things
+
+Everything runs from the repo root as a module, using the venv at `.venv`
+(Python 3.14). Full install steps are in `docs/SETUP.md`.
+
+```bash
+.venv/Scripts/python -m pytest -q
+.venv/Scripts/python -m src.train --config config/ppo_carracing.yaml --smoke   # 1,024-step pipeline check
+.venv/Scripts/python -m src.utils.compare --config config/ppo_carracing.yaml --stage before
+.venv/Scripts/python -m src.train --config config/ppo_carracing.yaml           # real run, ~3 h
+.venv/Scripts/python -m src.utils.compare --config config/ppo_carracing.yaml --stage after
+.venv/Scripts/python -m src.utils.plotting --config config/ppo_carracing.yaml
+.venv/Scripts/python -m src.evaluate --config config/ppo_carracing.yaml [--random]
+```
+
+## Stage 1 as built
+
+Decisions made while building Stage 1, on top of the locked-in ones below:
+
+- **Wrapper stack** (`src/envs/carracing_wrapper.py`): `SkipZoom` (50 no-op
+  frames on reset) -> `FrameSkip` (2) -> `RewardShaping` (training only) ->
+  `Monitor`, then `SubprocVecEnv` -> `VecFrameStack` (4) -> `VecTransposeImage`.
+  Observations stay raw RGB; the policy sees a (12, 96, 96) uint8 stack.
+- **Reward shaping is training-only**: per-step reward capped at 1.0, episode
+  truncated after 100 agent steps without a positive reward. Evaluation envs
+  are built with `shaped=False`, so every eval score, video and metrics file is
+  the true CarRacing reward. The raw training return is logged as
+  `rollout/ep_raw_rew_mean`.
+- **A "timestep" is one agent decision** = `frame_skip` simulator frames. A
+  full episode is 475 timesteps (1000 frames - 50 zoom, / 2).
+- **Evaluation tracks are fixed**: eval seeds are `seed + 10000 + episode`
+  (`src/utils/seeding.py`), shared by training-time evals and `compare.py`, so
+  before and after are scored on identical tracks.
+- **`src/evaluate.py` doubles as the rollout library** (`run_episode`,
+  `summarize`, `write_video`) used by `callbacks.py` and `compare.py`.
+- **`compare.py --stage after` scores `final_model.zip` by default**, not
+  `best_model.zip`: the best model is selected on 5 of the 10 comparison
+  tracks, so scoring it there would be biased. It also keeps `step_final.mp4`
+  meaning "the agent when training finished" (the file is only rewritten when
+  the final model is the one being scored). `evaluate.py` still defaults to
+  `best_model.zip` for live viewing.
+- **Driving metrics come from an opt-in `Telemetry` wrapper**
+  (`make_vec_env(..., telemetry=True)`, used by `compare.py` only): speed,
+  wheels on track and tiles visited are added to `info`; `run_episode` and
+  `summarize` turn them into track completion, laps, lap time, off-road share
+  and action usage. Training and training-time eval envs do not use it.
+- **Hyperparameters in `config/ppo_carracing.yaml` were never tuned**: the
+  first full run with them reached ~915, so they were left as they are.
+- **Dependencies**: `pygame-ce` instead of `pygame` (no 3.14 wheels), and
+  `box2d-py` installed from a locally built wheel in git-ignored `wheels/`
+  (no PyPI wheels exist; see `docs/SETUP.md` Route B for the rebuild).
+- **Measured on this machine**: ~250 timesteps/s with 8 envs at the start of a
+  run (16 envs only reaches ~300), ~180 averaged over the full 2M-step run,
+  ~250 MiB VRAM for PPO.
+
+Heads-up for Stage 2: an SAC replay buffer of stacked image observations is
+large (1M transitions x 12x96x96 bytes is ~110 GB), so the buffer size and
+frame stacking need sizing against the 32 GB of RAM.
 
 ## Sequencing (deliberate, de-risked)
 
@@ -37,12 +104,16 @@ meets a harder environment.
   out of scope now.
 - **Hardware: RTX 5070, 32GB DDR5.** Comfortably supports `SubprocVecEnv` with
   8 parallel envs and GPU-accelerated CNN training. No cloud/Colab needed.
+  (It is the Laptop GPU variant: 8 GB VRAM, 20 logical CPU cores.)
 
 ## Visualization approach
 
 - Train **headless and parallel** for speed.
-- A periodic `EvalCallback` spins up a **single separate rendered env** every
-  ~50k steps to auto-record video checkpoints — no slowdown to main training.
+- A periodic `EvalCallback` uses a **single separate rendered env**: it scores
+  the agent every 50k steps and records a video checkpoint every **400k steps**
+  plus one when training finishes (`step_final.mp4`) — no slowdown to main
+  training. (Originally ~50k for videos; changed to 400k at the user's request.)
+  All videos use the same track, the one in `step_0_random.mp4`.
 - `evaluate.py` is a separate on-demand script for live `render_mode="human"`
   viewing.
 - Every stage produces a **before/after (random vs. trained)** video and a
@@ -82,11 +153,13 @@ kurve/
 │   ├── train.py
 │   ├── evaluate.py
 │   └── utils/
+│       ├── config.py           # config loading, run output paths, algo registry
 │       ├── callbacks.py
 │       ├── plotting.py
 │       ├── seeding.py
 │       └── compare.py          # before/after video + stats comparisons
 ├── tests/
+│   ├── conftest.py
 │   ├── test_env_wrapper.py
 │   └── test_reward_shaping.py
 ├── .github/

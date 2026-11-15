@@ -1,0 +1,28 @@
+# Install PyTorch FIRST with the right CUDA build (plain `pip install torch` on
+# Windows is CPU-only). See docs/SETUP.md.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu130
+torch>=2.9
+
+stable-baselines3>=2.7
+gymnasium>=1.2
+
+# CarRacing's physics and rendering. Listed explicitly instead of
+# `gymnasium[box2d]` because that extra pins `pygame`, which has no wheels for
+# Python 3.14; pygame-ce is the maintained drop-in replacement.
+# box2d-py has no prebuilt wheels on PyPI: it needs swig + a C++ compiler, or a
+# wheel you built once (`pip install --find-links wheels ...`). See docs/SETUP.md.
+box2d-py==2.3.8
+pygame-ce>=2.5
+
+pyyaml>=6.0
+tensorboard>=2.15
+tqdm>=4.66
+rich>=13.0
+imageio>=2.34
+imageio-ffmpeg>=0.5
+pillow>=10.1
+matplotlib>=3.8
+pandas>=2.0
+numpy>=1.26
+
+pytest>=8.0
