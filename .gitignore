@@ -20,6 +20,9 @@ models/**/checkpoints/
 # Throwaway output of `python -m src.train --smoke`
 **/_smoke/
 
+# Local context for Claude Code; kept on this machine, not published
+CLAUDE.md
+
 # Editors / OS
 .vscode/
 .idea/
